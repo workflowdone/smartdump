@@ -6,7 +6,7 @@
 
 > **The modern BigDump alternative**. Import large MySQL databases with a beautiful step-by-step wizard interface.
 
-[**Live Demo**](https://yourdomain.com/smartdump.php) • [**Website**](https://yourdomain.com) • [**Report Bug**](https://github.com/workflowdone/smartdump/issues) • [**Request Feature**](https://github.com/workflowdone/smartdump/issues)
+• [**Report Bug**](https://github.com/workflowdone/smartdump/issues) • [**Request Feature**](https://github.com/workflowdone/smartdump/issues)
 
 ![SmartDump Interface](screenshot.png)
 

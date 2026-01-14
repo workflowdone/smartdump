@@ -154,13 +154,7 @@ For Nginx, edit your config:
 client_max_body_size 500M;
 ```
 
-### Optional: Change PayPal Email
 
-Edit line 21 in `smartdump.php`:
-
-```php
-define('PAYPAL_EMAIL', 'your@email.com');
-```
 
 ## 📖 Use Cases
 
@@ -337,6 +331,9 @@ Built with:
 - **Issues**: [Report a bug](https://github.com/workflowdone/smartdump/issues)
 - **Email**: [temo@workflowdone.com](mailto:support@workflowdone.com)
 - **Donate**: [PayPal.me/workflowdone](https://www.paypal.com/paypalme/workflowdone)
+
+- **Support & Knowledge Base**: [workflowdone.com/support]([https://workflowdone.co](https://workflowdone.com/support/kb/smartdump))
+ 
 
 ---
 

@@ -1,9 +1,16 @@
-<?php
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="drop_database">
+                                <label class="form-check-label text-danger">
+                                    <strong>DROP & RECREATE DATABASE</strong> (Deletes all data!)
+                                </label>
+                            </div>
+                        </div><?php
 /**
  * SmartDump - Modern SQL Import Tool
  * A clean, modern, step-by-step SQL import solution
  * 
- * @version 1.0.2
+ * @version 1.0.0
  * @license MIT
  * 
  * SECURITY: DELETE THIS FILE AFTER USE!
@@ -11,36 +18,39 @@
 
 // Handle AJAX requests FIRST - before anything else
 if (isset($_GET['action'])) {
-    // Kill all output buffers to avoid HTML in JSON
+    // Kill all output buffers
     while (ob_get_level()) {
         ob_end_clean();
     }
-
+    
+    ob_start();
+    
     $action = $_GET['action'] ?? '';
     $allowedActions = [
         'upload', 'list_files', 'delete_file', 'test_connection',
         'detect_charset', 'detect_prefix', 'import', 'get_logs',
         'backup_database', 'download_backup', 'list_backups'
     ];
-
-    if (!in_array($action, $allowedActions, true)) {
+    
+    if (!in_array($action, $allowedActions)) {
+        ob_end_clean();
         header('Content-Type: application/json');
         echo json_encode(['success' => false, 'message' => 'Invalid action']);
         exit;
     }
-
-    // Flag this request as AJAX so later logic can react if needed
-    define('AJAX_REQUEST', true);
-
-    // For AJAX we don't want PHP warnings polluting JSON
+    
+    ob_end_clean();
     error_reporting(0);
-    ini_set('display_errors', '0');
+    ini_set('display_errors', 0);
+    
+    // Include only necessary functions
+    define('AJAX_REQUEST', true);
 }
 
 session_start();
 error_reporting(E_ALL);
-ini_set('display_errors', '0'); // No HTML error output, log instead
-ini_set('log_errors', '1');
+ini_set('display_errors', 0); // Disable display, we'll log instead
+ini_set('log_errors', 1);
 @set_time_limit(0);
 @ini_set('memory_limit', '512M');
 
@@ -49,22 +59,21 @@ define('UPLOAD_DIR', __DIR__ . '/smartdump_uploads');
 define('BACKUP_DIR', __DIR__ . '/smartdump_backups');
 define('LOG_DIR', __DIR__ . '/smartdump_logs');
 define('MAX_UPLOAD_SIZE', 500 * 1024 * 1024);
-define('VERSION', '1.0.5');
+define('VERSION', '1.0.0');
 define('ENABLE_IP_WHITELIST', false);
 define('ALLOWED_IPS', ['127.0.0.1', '::1']);
 define('PAYPAL_EMAIL', 'your@paypal.com'); // CHANGE THIS!
 
-// Security: IP Whitelist (applies to ALL requests when enabled)
-if (ENABLE_IP_WHITELIST) {
+// Security: IP Whitelist
+if (!defined('AJAX_REQUEST') && ENABLE_IP_WHITELIST) {
     $clientIP = $_SERVER['REMOTE_ADDR'] ?? '';
-    if (!in_array($clientIP, ALLOWED_IPS, true)) {
-        header('HTTP/1.1 403 Forbidden');
-        exit('Access denied. Your IP is not whitelisted.');
+    if (!in_array($clientIP, ALLOWED_IPS)) {
+        die('Access denied. Your IP is not whitelisted.');
     }
 }
 
 // Create directories with .htaccess protection
-$htaccessContent = "Order deny,allow\nDeny from all\nRequire all denied\n";
+$htaccessContent = "Order deny,allow\nDeny from all\n";
 foreach ([UPLOAD_DIR, BACKUP_DIR, LOG_DIR] as $dir) {
     if (!is_dir($dir)) {
         mkdir($dir, 0755, true);
@@ -75,19 +84,36 @@ foreach ([UPLOAD_DIR, BACKUP_DIR, LOG_DIR] as $dir) {
     }
 }
 
+// NOW handle AJAX after setup
+if (defined('AJAX_REQUEST')) {
+    switch ($_GET['action']) {
+        case 'upload': handleFileUpload(); break;
+        case 'list_files': listFiles(); break;
+        case 'delete_file': deleteFile(); break;
+        case 'test_connection': testConnection(); break;
+        case 'detect_charset': detectCharset(); break;
+        case 'detect_prefix': detectPrefix(); break;
+        case 'import': executeImport(); break;
+        case 'get_logs': getLogs(); break;
+        case 'backup_database': backupDatabase(); break;
+        case 'download_backup': downloadBackup(); break;
+        case 'list_backups': listBackups(); break;
+    }
+    exit;
+}
+
 // Helper Functions
 function formatBytes($bytes, $precision = 2) {
     $units = ['B', 'KB', 'MB', 'GB'];
     $bytes = max($bytes, 0);
     $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
     $pow = min($pow, count($units) - 1);
-    $bytes /= (1 << (10 * $pow));
+    $bytes /= pow(1024, $pow);
     return round($bytes, $precision) . ' ' . $units[$pow];
 }
 
 function jsonResponse($data) {
-    header('Content-Type: application/json; charset=utf-8');
-    header('X-Content-Type-Options: nosniff');
+    header('Content-Type: application/json');
     echo json_encode($data);
     exit;
 }
@@ -95,12 +121,8 @@ function jsonResponse($data) {
 function logMessage($sessionId, $message, $type = 'info') {
     $logFile = LOG_DIR . '/' . $sessionId . '.log';
     $timestamp = date('Y-m-d H:i:s');
-    $typeSafe = preg_replace('/[^a-zA-Z0-9_]/', '', strtolower($type));
-    if ($typeSafe === '') {
-        $typeSafe = 'info';
-    }
-    $logEntry = "[{$timestamp}] [{$typeSafe}] {$message}\n";
-    file_put_contents($logFile, $logEntry, FILE_APPEND | LOCK_EX);
+    $logEntry = "[{$timestamp}] [{$type}] {$message}\n";
+    file_put_contents($logFile, $logEntry, FILE_APPEND);
 }
 
 function handleFileUpload() {
@@ -108,60 +130,58 @@ function handleFileUpload() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             jsonResponse(['success' => false, 'message' => 'Invalid request method']);
         }
-
+        
         if (!isset($_FILES['sql_file'])) {
             jsonResponse(['success' => false, 'message' => 'No file uploaded']);
         }
-
+        
         $file = $_FILES['sql_file'];
-
+        
         if ($file['error'] !== UPLOAD_ERR_OK) {
             $errorMessages = [
-                UPLOAD_ERR_INI_SIZE   => 'File exceeds upload_max_filesize',
-                UPLOAD_ERR_FORM_SIZE  => 'File exceeds MAX_FILE_SIZE',
-                UPLOAD_ERR_PARTIAL    => 'File was only partially uploaded',
-                UPLOAD_ERR_NO_FILE    => 'No file was uploaded',
+                UPLOAD_ERR_INI_SIZE => 'File exceeds upload_max_filesize',
+                UPLOAD_ERR_FORM_SIZE => 'File exceeds MAX_FILE_SIZE',
+                UPLOAD_ERR_PARTIAL => 'File was only partially uploaded',
+                UPLOAD_ERR_NO_FILE => 'No file was uploaded',
                 UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder',
                 UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',
-                UPLOAD_ERR_EXTENSION  => 'Upload blocked by extension'
+                UPLOAD_ERR_EXTENSION => 'Upload blocked by extension'
             ];
-            $errorMsg = $errorMessages[$file['error']] ?? ('Unknown upload error: ' . $file['error']);
+            $errorMsg = $errorMessages[$file['error']] ?? 'Unknown upload error: ' . $file['error'];
             jsonResponse(['success' => false, 'message' => $errorMsg]);
         }
-
-        if ($file['size'] > MAX_UPLOAD_SIZE) {
-            jsonResponse(['success' => false, 'message' => 'File too large. Use FTP upload instead.']);
-        }
-
+        
+        // Check if upload directory is writable
         if (!is_writable(UPLOAD_DIR)) {
             jsonResponse(['success' => false, 'message' => 'Upload directory is not writable. Set permissions to 755 or 777.']);
         }
-
+        
         $allowedExtensions = ['sql', 'gz'];
         $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-
-        if (!in_array($extension, $allowedExtensions, true)) {
+        
+        if (!in_array($extension, $allowedExtensions)) {
             jsonResponse(['success' => false, 'message' => 'Only .sql and .gz files allowed']);
         }
-
+        
         $filename = preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $file['name']);
         $filepath = UPLOAD_DIR . '/' . $filename;
-
+        
         // Handle duplicate filenames - add timestamp
         if (file_exists($filepath)) {
             $fileInfo = pathinfo($filename);
             $baseName = $fileInfo['filename'];
-            $ext = isset($fileInfo['extension']) ? '.' . $fileInfo['extension'] : '';
-            $filename = $baseName . '_' . time() . $ext;
+            $extension = isset($fileInfo['extension']) ? '.' . $fileInfo['extension'] : '';
+            $filename = $baseName . '_' . time() . $extension;
             $filepath = UPLOAD_DIR . '/' . $filename;
         }
-
+        
         if (!move_uploaded_file($file['tmp_name'], $filepath)) {
             jsonResponse(['success' => false, 'message' => 'Failed to save file. Check directory permissions.']);
         }
-
+        
+        // Set proper permissions
         chmod($filepath, 0644);
-
+        
         jsonResponse([
             'success' => true,
             'message' => 'File uploaded successfully',
@@ -177,37 +197,35 @@ function handleFileUpload() {
 function listFiles() {
     try {
         $files = [];
-
+        
         if (!is_dir(UPLOAD_DIR)) {
             jsonResponse(['success' => true, 'files' => []]);
         }
-
+        
         if (!is_readable(UPLOAD_DIR)) {
             jsonResponse(['success' => false, 'message' => 'Upload directory is not readable']);
         }
-
+        
         $items = @scandir(UPLOAD_DIR);
-
+        
         if ($items === false) {
             jsonResponse(['success' => false, 'message' => 'Cannot read upload directory']);
         }
-
+        
         foreach ($items as $item) {
-            if ($item === '.' || $item === '..' || $item === '.htaccess') {
-                continue;
-            }
-
+            if ($item === '.' || $item === '..' || $item === '.htaccess') continue;
+            
             $filepath = UPLOAD_DIR . '/' . $item;
             if (is_file($filepath)) {
                 $files[] = [
-                    'name'  => $item,
-                    'size'  => formatBytes(filesize($filepath)),
+                    'name' => $item,
+                    'size' => formatBytes(filesize($filepath)),
                     'bytes' => filesize($filepath),
-                    'date'  => date('Y-m-d H:i:s', filemtime($filepath))
+                    'date' => date('Y-m-d H:i:s', filemtime($filepath))
                 ];
             }
         }
-
+        
         jsonResponse(['success' => true, 'files' => $files]);
     } catch (Exception $e) {
         jsonResponse(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
@@ -218,21 +236,21 @@ function deleteFile() {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         jsonResponse(['success' => false, 'message' => 'Invalid request']);
     }
-
+    
     $filename = basename($_POST['filename'] ?? '');
-
+    
     if (!preg_match('/^[a-zA-Z0-9_\-\.]+$/', $filename)) {
         jsonResponse(['success' => false, 'message' => 'Invalid filename']);
     }
-
+    
     $filepath = UPLOAD_DIR . '/' . $filename;
     $realPath = realpath($filepath);
     $uploadDirReal = realpath(UPLOAD_DIR);
-
+    
     if (!$realPath || strpos($realPath, $uploadDirReal) !== 0) {
         jsonResponse(['success' => false, 'message' => 'Security: Invalid path']);
     }
-
+    
     if (file_exists($filepath) && unlink($filepath)) {
         jsonResponse(['success' => true, 'message' => 'File deleted']);
     } else {
@@ -245,109 +263,92 @@ function testConnection() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             jsonResponse(['success' => false, 'message' => 'Invalid request method']);
         }
-
-        $host = trim((string)($_POST['db_host'] ?? ''));
-        $user = trim((string)($_POST['db_user'] ?? ''));
-        $pass = (string)($_POST['db_pass'] ?? '');
-        $name = trim((string)($_POST['db_name'] ?? ''));
-
-        if ($host === '' || $user === '' || $name === '') {
+        
+        $host = filter_var($_POST['db_host'] ?? '', FILTER_SANITIZE_STRING);
+        $user = filter_var($_POST['db_user'] ?? '', FILTER_SANITIZE_STRING);
+        $pass = $_POST['db_pass'] ?? '';
+        $name = filter_var($_POST['db_name'] ?? '', FILTER_SANITIZE_STRING);
+        
+        // Validate inputs
+        if (empty($host) || empty($user) || empty($name)) {
             jsonResponse(['success' => false, 'message' => 'Please fill in all required fields']);
         }
-
+        
+        // Suppress connection errors and handle manually
         $mysqli = @new mysqli($host, $user, $pass, $name);
-
+        
         if ($mysqli->connect_error) {
-            jsonResponse(['success' => false, 'message' => 'Connection failed: ' . htmlspecialchars($mysqli->connect_error, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')]);
+            jsonResponse(['success' => false, 'message' => 'Connection failed: ' . htmlspecialchars($mysqli->connect_error)]);
         }
-
+        
         $version = $mysqli->get_server_info();
-        
-        // Detect server type
-        $serverType = 'MySQL';
-        if (stripos($version, 'mariadb') !== false) {
-            $serverType = 'MariaDB';
-        }
-        
-        // Get detailed version info
-        $result = $mysqli->query("SELECT VERSION() as ver");
-        $fullVersion = $version;
-        if ($result) {
-            $row = $result->fetch_assoc();
-            $fullVersion = $row['ver'] ?? $version;
-            $result->free();
-        }
-        
         $mysqli->close();
-
+        
         jsonResponse([
             'success' => true,
-            'message' => "Connected! {$serverType} " . htmlspecialchars($fullVersion, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-            'version' => htmlspecialchars($fullVersion, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-            'serverType' => $serverType
+            'message' => 'Connected! MySQL ' . htmlspecialchars($version),
+            'version' => htmlspecialchars($version)
         ]);
     } catch (Exception $e) {
-        jsonResponse(['success' => false, 'message' => 'Error: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')]);
+        jsonResponse(['success' => false, 'message' => 'Error: ' . htmlspecialchars($e->getMessage())]);
     }
 }
 
 function detectCharset() {
     $filename = basename($_POST['filename'] ?? '');
-
+    
     if (!preg_match('/^[a-zA-Z0-9_\-\.]+$/', $filename)) {
         jsonResponse(['success' => false, 'message' => 'Invalid filename']);
     }
-
+    
     $filepath = UPLOAD_DIR . '/' . $filename;
-
+    
     if (!file_exists($filepath)) {
         jsonResponse(['success' => false, 'message' => 'File not found']);
     }
-
+    
     $extension = strtolower(pathinfo($filepath, PATHINFO_EXTENSION));
     $isGzip = ($extension === 'gz');
-
-    $file = $isGzip ? @gzopen($filepath, 'r') : @fopen($filepath, 'r');
-
+    
+    $file = $isGzip ? gzopen($filepath, 'r') : fopen($filepath, 'r');
+    
     if (!$file) {
         jsonResponse(['success' => false, 'message' => 'Cannot open file']);
     }
-
+    
     $charset = 'utf8mb4';
     $collation = 'utf8mb4_unicode_ci';
     $linesChecked = 0;
-
-    while (!($isGzip ? gzeof($file) : feof($file)) && $linesChecked < 100) {
+    
+    while (!feof($file) && $linesChecked < 100) {
         $line = $isGzip ? gzgets($file, 8192) : fgets($file, 8192);
-        if ($line === false) {
-            break;
-        }
-
+        if ($line === false) break;
+        
         $linesChecked++;
-
+        
         if (preg_match('/SET NAMES\s+([a-z0-9_]+)/i', $line, $matches)) {
             $charset = $matches[1];
         }
-
+        
         if (preg_match('/CHARSET[=\s]+([a-z0-9_]+)/i', $line, $matches)) {
             $charset = $matches[1];
         }
-
+        
         if (preg_match('/COLLATE[=\s]+([a-z0-9_]+)/i', $line, $matches)) {
             $collation = $matches[1];
         }
     }
-
+    
     if ($isGzip) {
         gzclose($file);
     } else {
         fclose($file);
     }
-
+    
     jsonResponse([
-        'success'    => true,
-        'charset'    => $charset,
-        'collation'  => $collation
+        'success' => true,
+        'charset' => $charset,
+        'collation' => $collation
     ]);
 }
 
@@ -355,545 +356,320 @@ function detectPrefix() {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         jsonResponse(['success' => false, 'message' => 'Invalid request']);
     }
-
-    $host = trim((string)($_POST['db_host'] ?? ''));
-    $user = trim((string)($_POST['db_user'] ?? ''));
-    $pass = (string)($_POST['db_pass'] ?? '');
-    $name = trim((string)($_POST['db_name'] ?? ''));
-
+    
+    $host = filter_var($_POST['db_host'] ?? '', FILTER_SANITIZE_STRING);
+    $user = filter_var($_POST['db_user'] ?? '', FILTER_SANITIZE_STRING);
+    $pass = $_POST['db_pass'] ?? '';
+    $name = filter_var($_POST['db_name'] ?? '', FILTER_SANITIZE_STRING);
+    
     try {
-        $mysqli = @new mysqli($host, $user, $pass, $name);
-
+        $mysqli = new mysqli($host, $user, $pass, $name);
+        
         if ($mysqli->connect_error) {
             throw new Exception($mysqli->connect_error);
         }
-
+        
         $result = $mysqli->query("SHOW TABLES");
         $tables = [];
-
-        if ($result) {
-            while ($row = $result->fetch_array()) {
-                $tables[] = $row[0];
-            }
-            $result->free();
+        
+        while ($row = $result->fetch_array()) {
+            $tables[] = $row[0];
         }
-
+        
+        $mysqli->close();
+        
         $prefix = '';
         if (count($tables) > 0) {
             $prefixes = [];
             foreach ($tables as $table) {
-                if (preg_match('/^([a-z0-9_]+)_/i', $table, $matches)) {
+                if (preg_match('/^([a-z0-9_]+)_/', $table, $matches)) {
                     $prefixes[] = $matches[1] . '_';
                 }
             }
-
+            
             if (count($prefixes) > 0) {
                 $prefixCount = array_count_values($prefixes);
                 arsort($prefixCount);
                 $prefix = key($prefixCount);
             }
         }
-
-        $mysqli->close();
-
+        
         jsonResponse([
-            'success'    => true,
-            'prefix'     => $prefix,
+            'success' => true,
+            'prefix' => $prefix,
             'tableCount' => count($tables)
         ]);
+        
     } catch (Exception $e) {
-        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')]);
+        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage())]);
     }
-}
-
-/**
- * Safely replace table prefix in SQL query
- * This function is careful to only replace prefixes in table names, not in data values
- */
-function safeReplacePrefixInQuery($query, $oldPrefix, $newPrefix) {
-    if ($oldPrefix === '' || $oldPrefix === $newPrefix) {
-        return $query;
-    }
-    
-    // Detect query type
-    $queryUpper = strtoupper(trim($query));
-    
-    // For INSERT/REPLACE statements, only replace prefix in the table name part, not in VALUES
-    if (preg_match('/^(INSERT|REPLACE)\s+/i', $queryUpper)) {
-        // Match: INSERT INTO `prefix_table` or INSERT INTO prefix_table
-        // Only replace in the table name portion (before VALUES/SET)
-        if (preg_match('/^((?:INSERT|REPLACE)\s+(?:INTO\s+)?)`?' . preg_quote($oldPrefix, '/') . '(\w+)`?(.*)$/is', $query, $matches)) {
-            return $matches[1] . '`' . $newPrefix . $matches[2] . '`' . $matches[3];
-        }
-        return $query;
-    }
-    
-    // For CREATE TABLE, DROP TABLE, ALTER TABLE - safe to replace
-    if (preg_match('/^(CREATE|DROP|ALTER|TRUNCATE)\s+TABLE/i', $queryUpper)) {
-        return preg_replace(
-            '/\b`?' . preg_quote($oldPrefix, '/') . '(\w+)`?\b/',
-            '`' . $newPrefix . '$1`',
-            $query
-        );
-    }
-    
-    // For UPDATE statements, only replace in table name (before SET)
-    if (preg_match('/^UPDATE\s+/i', $queryUpper)) {
-        if (preg_match('/^(UPDATE\s+)`?' . preg_quote($oldPrefix, '/') . '(\w+)`?(\s+SET.*)$/is', $query, $matches)) {
-            return $matches[1] . '`' . $newPrefix . $matches[2] . '`' . $matches[3];
-        }
-        return $query;
-    }
-    
-    // For DELETE statements
-    if (preg_match('/^DELETE\s+FROM\s+/i', $queryUpper)) {
-        if (preg_match('/^(DELETE\s+FROM\s+)`?' . preg_quote($oldPrefix, '/') . '(\w+)`?(.*)$/is', $query, $matches)) {
-            return $matches[1] . '`' . $newPrefix . $matches[2] . '`' . $matches[3];
-        }
-        return $query;
-    }
-    
-    // For SELECT statements (less common in dumps, but handle anyway)
-    if (preg_match('/^SELECT\s+/i', $queryUpper)) {
-        // Only replace in FROM and JOIN clauses, be conservative
-        return $query; // Skip prefix replacement in SELECT to be safe
-    }
-    
-    // For LOCK/UNLOCK TABLES
-    if (preg_match('/^(LOCK|UNLOCK)\s+TABLES/i', $queryUpper)) {
-        return preg_replace(
-            '/`' . preg_quote($oldPrefix, '/') . '(\w+)`/',
-            '`' . $newPrefix . '$1`',
-            $query
-        );
-    }
-    
-    // For other DDL statements (indexes, etc.) - generally safe
-    if (preg_match('/^(CREATE|DROP|ALTER)\s+(INDEX|DATABASE|SCHEMA)/i', $queryUpper)) {
-        return preg_replace(
-            '/\b`?' . preg_quote($oldPrefix, '/') . '(\w+)`?\b/',
-            '`' . $newPrefix . '$1`',
-            $query
-        );
-    }
-    
-    // Default: don't replace to be safe (especially for SET statements, etc.)
-    return $query;
-}
-
-/**
- * Check if a query should be skipped (problematic queries)
- */
-function shouldSkipQuery($query) {
-    $queryTrimmed = trim($query);
-    
-    // Skip empty queries
-    if ($queryTrimmed === '') {
-        return true;
-    }
-    
-    // Skip SET statements that restore NULL variables (common mysqldump issue)
-    // These cause "can't be set to the value of 'NULL'" errors
-    $problematicPatterns = [
-        '/^SET\s+character_set_client\s*=\s*@saved_cs_client/i',
-        '/^SET\s+character_set_results\s*=\s*@saved_cs_results/i',
-        '/^SET\s+collation_connection\s*=\s*@saved_col_connection/i',
-        '/^SET\s+\w+\s*=\s*@\w+/i', // Generic: SET something = @variable (often NULL)
-    ];
-    
-    foreach ($problematicPatterns as $pattern) {
-        if (preg_match($pattern, $queryTrimmed)) {
-            return true;
-        }
-    }
-    
-    return false;
 }
 
 function executeImport() {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         jsonResponse(['success' => false, 'message' => 'Invalid request']);
     }
-
+    
     $config = $_POST;
-
-    $host      = trim((string)($config['db_host'] ?? ''));
-    $user      = trim((string)($config['db_user'] ?? ''));
-    $pass      = (string)($config['db_pass'] ?? '');
-    $name      = trim((string)($config['db_name'] ?? ''));
-    $charset   = trim((string)($config['db_charset'] ?? ''));
-    $collation = trim((string)($config['db_collation'] ?? ''));
-
+    
+    $host = filter_var($config['db_host'] ?? '', FILTER_SANITIZE_STRING);
+    $user = filter_var($config['db_user'] ?? '', FILTER_SANITIZE_STRING);
+    $pass = $config['db_pass'] ?? '';
+    $name = filter_var($config['db_name'] ?? '', FILTER_SANITIZE_STRING);
+    $charset = filter_var($config['db_charset'] ?? '', FILTER_SANITIZE_STRING);
+    $collation = filter_var($config['db_collation'] ?? '', FILTER_SANITIZE_STRING);
+    
     $allowedCharsets = ['utf8', 'utf8mb4', 'latin1', 'cp1251'];
-    if ($charset !== '' && !in_array($charset, $allowedCharsets, true)) {
+    if (!empty($charset) && !in_array($charset, $allowedCharsets)) {
         jsonResponse(['success' => false, 'message' => 'Invalid charset']);
     }
-
-    $sessionId     = $config['session_id'] ?? uniqid('import_', true);
-    $offset        = (int)($config['offset'] ?? 0);
-    $totalQueries  = (int)($config['totalQueries'] ?? 0);
-    $filename      = basename($config['filename'] ?? '');
-    $dropDatabase  = !empty($config['drop_database']) && $config['drop_database'] === '1';
-    $continueOnErr = !empty($config['continue_on_error']) && $config['continue_on_error'] === '1';
-
+    
+    $sessionId = $config['session_id'] ?? uniqid('import_');
+    $offset = (int)($config['offset'] ?? 0);
+    $totalQueries = (int)($config['totalQueries'] ?? 0);
+    $filename = basename($config['filename'] ?? '');
+    
     if (!preg_match('/^[a-zA-Z0-9_\-\.]+$/', $filename)) {
         jsonResponse(['success' => false, 'message' => 'Invalid filename']);
     }
-
-    $filepath      = UPLOAD_DIR . '/' . $filename;
-    $realPath      = realpath($filepath);
+    
+    $filepath = UPLOAD_DIR . '/' . $filename;
+    $realPath = realpath($filepath);
     $uploadDirReal = realpath(UPLOAD_DIR);
-
+    
     if (!$realPath || strpos($realPath, $uploadDirReal) !== 0) {
         jsonResponse(['success' => false, 'message' => 'Security: Invalid path']);
     }
-
+    
     if (!file_exists($filepath)) {
         jsonResponse(['success' => false, 'message' => 'File not found']);
     }
-
+    
     try {
-        $mysqli = @new mysqli($host, $user, $pass, $name);
-
+        $mysqli = new mysqli($host, $user, $pass, $name);
+        
         if ($mysqli->connect_error) {
             throw new Exception($mysqli->connect_error);
         }
-
-        if ($charset !== '') {
+        
+        if (!empty($charset)) {
             $mysqli->set_charset($charset);
         }
-
-        if ($collation !== '') {
+        
+        if (!empty($collation)) {
             $stmt = $mysqli->prepare("SET collation_connection = ?");
-            if ($stmt) {
-                $stmt->bind_param("s", $collation);
-                $stmt->execute();
-                $stmt->close();
-            }
+            $stmt->bind_param("s", $collation);
+            $stmt->execute();
+            $stmt->close();
         }
-
-        // Set up session variables that mysqldump expects
+        
         $mysqli->query("SET FOREIGN_KEY_CHECKS = 0");
         $mysqli->query("SET UNIQUE_CHECKS = 0");
         $mysqli->query("SET AUTOCOMMIT = 0");
         
-        // SQL mode compatibility - handle both MySQL and MariaDB
-        // Use error suppression as some modes may not be available on all versions
-        @$mysqli->query("SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO,NO_ENGINE_SUBSTITUTION'");
-        
-        // Disable strict mode to be more permissive with data
-        @$mysqli->query("SET SESSION sql_mode = ''");
-        
-        // Handle time zone issues (suppress errors if not allowed)
-        @$mysqli->query("SET time_zone = '+00:00'");
-        
-        // Initialize variables that mysqldump might try to restore later
-        // This prevents "can't be set to NULL" errors
-        if ($charset !== '') {
-            $mysqli->query("SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT");
-            $mysqli->query("SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS");
-            $mysqli->query("SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION");
-            $mysqli->query("SET @saved_cs_client = @@character_set_client");
-            $mysqli->query("SET @saved_cs_results = @@character_set_results");
-            $mysqli->query("SET @saved_col_connection = @@collation_connection");
-        }
-
-        if ($offset === 0 && $dropDatabase) {
+        if ($offset === 0 && !empty($config['drop_database']) && $config['drop_database'] === 'true') {
             $dbNameEscaped = '`' . str_replace('`', '``', $name) . '`';
             $mysqli->query("DROP DATABASE IF EXISTS {$dbNameEscaped}");
             $mysqli->query("CREATE DATABASE {$dbNameEscaped}");
             $mysqli->select_db($name);
             logMessage($sessionId, "Database dropped and recreated", 'warning');
         }
-
+        
         $extension = strtolower(pathinfo($filepath, PATHINFO_EXTENSION));
-        $isGzip    = ($extension === 'gz');
-
-        $file = $isGzip ? @gzopen($filepath, 'r') : @fopen($filepath, 'r');
-
+        $isGzip = ($extension === 'gz');
+        
+        $file = $isGzip ? gzopen($filepath, 'r') : fopen($filepath, 'r');
+        
         if (!$file) {
             throw new Exception('Failed to open file');
         }
-
+        
         if ($isGzip) {
-            @gzseek($file, $offset);
+            gzseek($file, $offset);
         } else {
-            @fseek($file, $offset);
+            fseek($file, $offset);
         }
-
-        $maxQueries = max(1, (int)($config['max_queries'] ?? 300));
-        $maxTime    = max(1, (int)($config['max_time'] ?? 30));
-        $startTime  = time();
-
-        $query          = '';
+        
+        $maxQueries = (int)($config['max_queries'] ?? 300);
+        $maxTime = (int)($config['max_time'] ?? 30);
+        $startTime = time();
+        
+        $query = '';
         $queriesExecuted = 0;
-        $queriesFailed   = 0;
-        $queriesSkipped  = 0;
-        $delimiter       = ';';
-        $queryBuffer     = [];
-
-        $oldPrefix       = $config['old_prefix'] ?? '';
-        $newPrefix       = $config['new_prefix'] ?? '';
-        $replacePrefix   = ($oldPrefix !== '' && $newPrefix !== '' && $oldPrefix !== $newPrefix);
-
+        $queriesFailed = 0;
+        $delimiter = ';';
+        $queryBuffer = [];
+        
+        $oldPrefix = $config['old_prefix'] ?? '';
+        $newPrefix = $config['new_prefix'] ?? '';
+        $replacePrefix = !empty($oldPrefix) && !empty($newPrefix);
+        
         if ($offset === 0) {
             logMessage($sessionId, "Starting import: " . basename($filepath));
             logMessage($sessionId, "File size: " . formatBytes(filesize($filepath)));
             if ($replacePrefix) {
-                logMessage($sessionId, "Replacing prefix: {$oldPrefix} → {$newPrefix} (safe mode)");
+                logMessage($sessionId, "Replacing prefix: {$oldPrefix} → {$newPrefix}");
             }
         }
-
-        // SQL parsing state
-        $inString = false;
-        $stringChar = '';
-        $escaped = false;
         
-        while (!($isGzip ? gzeof($file) : feof($file))
-            && $queriesExecuted < $maxQueries
-            && (time() - $startTime) < $maxTime
-        ) {
-            $line = $isGzip ? gzgets($file, 131072) : fgets($file, 131072);
-            if ($line === false) {
-                break;
-            }
-
+        while (!feof($file) && $queriesExecuted < $maxQueries && (time() - $startTime) < $maxTime) {
+            $line = $isGzip ? gzgets($file, 8192) : fgets($file, 8192);
+            if ($line === false) break;
+            
             $trimmedLine = trim($line);
-
-            // Skip empty lines and comments (only when not inside a string)
-            if (!$inString) {
-                if ($trimmedLine === '' ||
-                    substr($trimmedLine, 0, 2) === '--' ||
-                    substr($trimmedLine, 0, 1) === '#') {
-                    continue;
-                }
-
-                // Handle DELIMITER changes
-                if (stripos($trimmedLine, 'DELIMITER') === 0) {
-                    $parts = preg_split('/\s+/', $trimmedLine);
-                    if (isset($parts[1])) {
-                        $delimiter = trim($parts[1]);
-                    }
-                    continue;
-                }
+            
+            if (empty($trimmedLine) || 
+                substr($trimmedLine, 0, 2) === '--' || 
+                substr($trimmedLine, 0, 1) === '#') {
+                continue;
             }
-
-            // Process character by character to find real statement end
-            $lineLen = strlen($line);
-            for ($i = 0; $i < $lineLen; $i++) {
-                $char = $line[$i];
+            
+            if (stripos($trimmedLine, 'DELIMITER') === 0) {
+                $parts = preg_split('/\s+/', $trimmedLine);
+                if (isset($parts[1])) {
+                    $delimiter = trim($parts[1]);
+                }
+                continue;
+            }
+            
+            $query .= ' ' . $line;
+            
+            if (substr(rtrim($trimmedLine), -strlen($delimiter)) === $delimiter) {
+                $query = trim($query);
+                $query = substr($query, 0, -strlen($delimiter));
                 
-                if ($escaped) {
-                    $query .= $char;
-                    $escaped = false;
-                    continue;
+                if ($replacePrefix && !empty($query)) {
+                    $query = preg_replace(
+                        '/\b' . preg_quote($oldPrefix, '/') . '(\w+)\b/',
+                        $newPrefix . '$1',
+                        $query
+                    );
                 }
                 
-                // Handle escape character
-                if ($char === '\\' && $inString) {
-                    $query .= $char;
-                    $escaped = true;
-                    continue;
-                }
-                
-                // Handle string boundaries
-                if (($char === "'" || $char === '"') && !$escaped) {
-                    if (!$inString) {
-                        $inString = true;
-                        $stringChar = $char;
-                    } elseif ($char === $stringChar) {
-                        // Check for escaped quote ('' or "")
-                        if ($i + 1 < $lineLen && $line[$i + 1] === $char) {
-                            $query .= $char . $char;
-                            $i++; // Skip next char
-                            continue;
-                        }
-                        $inString = false;
-                        $stringChar = '';
-                    }
-                    $query .= $char;
-                    continue;
-                }
-                
-                // Handle backtick identifiers
-                if ($char === '`' && !$inString) {
-                    // Find closing backtick
-                    $query .= $char;
-                    continue;
-                }
-                
-                $query .= $char;
-                
-                // Check for delimiter (only when not in string)
-                if (!$inString && strlen($query) >= strlen($delimiter)) {
-                    $queryEnd = substr($query, -strlen($delimiter));
-                    if ($queryEnd === $delimiter) {
-                        // Found end of statement
-                        $query = trim(substr($query, 0, -strlen($delimiter)));
-                        
-                        // Check if this query should be skipped
-                        if (shouldSkipQuery($query)) {
-                            $queriesSkipped++;
-                            $query = '';
-                            continue;
-                        }
-
-                        // Safe prefix replacement (only in table names, not in data)
-                        if ($replacePrefix && $query !== '') {
-                            $query = safeReplacePrefixInQuery($query, $oldPrefix, $newPrefix);
-                        }
-
-                        if ($query !== '') {
-                            $queryBuffer[] = $query;
-
-                            if (count($queryBuffer) >= 10) {
-                                foreach ($queryBuffer as $q) {
-                                    if (!$mysqli->query($q)) {
-                                        $queriesFailed++;
-                                        $errorMsg = $mysqli->error;
-                                        // Log first few errors for debugging
-                                        if ($queriesFailed <= 5) {
-                                            logMessage($sessionId, "Query error: " . substr($errorMsg, 0, 200), 'warning');
-                                        }
-                                        if (!$continueOnErr) {
-                                            throw new Exception('Query failed: ' . $errorMsg);
-                                        }
-                                    } else {
-                                        $queriesExecuted++;
-                                    }
-                                }
-                                $mysqli->commit();
-                                $queryBuffer = [];
+                if (!empty($query)) {
+                    $queryBuffer[] = $query;
+                    
+                    if (count($queryBuffer) >= 10) {
+                        foreach ($queryBuffer as $q) {
+                            if (!$mysqli->query($q)) {
+                                $queriesFailed++;
+                            } else {
+                                $queriesExecuted++;
                             }
-
-                            $totalQueries++;
                         }
-
-                        $query = '';
+                        $mysqli->commit();
+                        $queryBuffer = [];
                     }
+                    
+                    $totalQueries++;
                 }
+                
+                $query = '';
             }
         }
-
+        
         if (!empty($queryBuffer)) {
             foreach ($queryBuffer as $q) {
                 if (!$mysqli->query($q)) {
                     $queriesFailed++;
-                    if (!$continueOnErr) {
-                        throw new Exception('Query failed: ' . $mysqli->error);
-                    }
                 } else {
                     $queriesExecuted++;
                 }
             }
             $mysqli->commit();
         }
-
+        
         $mysqli->query("SET FOREIGN_KEY_CHECKS = 1");
         $mysqli->query("SET UNIQUE_CHECKS = 1");
         $mysqli->query("SET AUTOCOMMIT = 1");
-
-        $newOffset = $isGzip ? @gztell($file) : @ftell($file);
-        $fileSize  = filesize($filepath);
-        $isComplete = $isGzip ? gzeof($file) : feof($file);
-
+        
+        $newOffset = $isGzip ? gztell($file) : ftell($file);
+        $fileSize = filesize($filepath);
+        $isComplete = feof($file);
+        
         if ($isGzip) {
-            @gzclose($file);
+            gzclose($file);
         } else {
-            @fclose($file);
+            fclose($file);
         }
-
-        $progress = $isGzip ? 0 : ($fileSize > 0 ? round(($newOffset / $fileSize) * 100, 2) : 0);
-
-        if ($queriesExecuted > 0 || $queriesFailed > 0) {
-            $logMsg = "Batch: {$queriesExecuted} OK, {$queriesFailed} failed";
-            if ($queriesSkipped > 0) {
-                $logMsg .= ", {$queriesSkipped} skipped";
-            }
-            logMessage($sessionId, $logMsg);
+        
+        $mysqli->close();
+        
+        $progress = $isGzip ? 0 : round(($newOffset / $fileSize) * 100, 2);
+        
+        if ($queriesExecuted > 0) {
+            logMessage($sessionId, "Batch: {$queriesExecuted} queries, {$queriesFailed} failed");
         }
-
+        
         if ($isComplete) {
             logMessage($sessionId, "Import completed! Total: {$totalQueries}", 'success');
-
-            // Post-import verification (best-effort, errors ignored)
+            
+            // Post-import verification
             try {
                 $result = $mysqli->query("SHOW TABLES");
-                if ($result) {
-                    $tableCount = $result->num_rows;
-                    $result->free();
-                    logMessage($sessionId, "Verification: {$tableCount} tables found", 'success');
-
-                    $wpCheck = $mysqli->query("SHOW TABLES LIKE '%posts'");
-                    if ($wpCheck && $wpCheck->num_rows > 0) {
-                        logMessage($sessionId, "WordPress-like database detected - basic structure present.", 'success');
-                        $wpCheck->free();
+                $tableCount = $result->num_rows;
+                logMessage($sessionId, "Verification: {$tableCount} tables found", 'success');
+                
+                // Check if WordPress (most common use case)
+                $wpCheck = $mysqli->query("SHOW TABLES LIKE '%posts'");
+                if ($wpCheck && $wpCheck->num_rows > 0) {
+                    $postCount = $mysqli->query("SELECT COUNT(*) as cnt FROM (SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{$name}' AND TABLE_NAME LIKE '%posts') as t");
+                    if ($postCount) {
+                        logMessage($sessionId, "WordPress database detected - looks healthy!", 'success');
                     }
                 }
             } catch (Exception $e) {
                 // Ignore verification errors
             }
-
-            if (!empty($config['notification_email']) &&
-                filter_var($config['notification_email'], FILTER_VALIDATE_EMAIL)
-            ) {
+            
+            if (!empty($config['notification_email']) && filter_var($config['notification_email'], FILTER_VALIDATE_EMAIL)) {
                 $subject = 'SmartDump: Import Completed';
-                $successRate = $totalQueries > 0
-                    ? round(($queriesExecuted / $totalQueries) * 100, 2)
-                    : 0;
-
                 $message = "<p><strong>Import completed successfully!</strong></p>
                     <ul>
-                        <li>Database: " . htmlspecialchars($name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</li>
+                        <li>Database: " . htmlspecialchars($name) . "</li>
                         <li>Total Queries: {$totalQueries}</li>
                         <li>Successful: {$queriesExecuted}</li>
                         <li>Failed: {$queriesFailed}</li>
-                        <li>Success Rate: {$successRate}%</li>
+                        <li>Success Rate: " . round(($queriesExecuted / $totalQueries) * 100, 2) . "%</li>
                     </ul>
                     <p><strong>Recommendation:</strong> Test your website/application to ensure everything works correctly.</p>";
-
-                $headers  = "MIME-Version: 1.0\r\n";
-                $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-
-                @mail($config['notification_email'], $subject, $message, $headers);
+                mail($config['notification_email'], $subject, $message, "Content-Type: text/html");
             }
         }
-
-        $mysqli->close();
-
+        
         jsonResponse([
-            'success'        => true,
-            'complete'       => $isComplete,
-            'offset'         => $newOffset,
-            'totalQueries'   => $totalQueries,
-            'queriesExecuted'=> $queriesExecuted,
-            'queriesFailed'  => $queriesFailed,
-            'queriesSkipped' => $queriesSkipped,
-            'progress'       => $progress,
-            'fileSize'       => formatBytes($fileSize),
-            'processed'      => formatBytes($newOffset),
-            'sessionId'      => $sessionId
+            'success' => true,
+            'complete' => $isComplete,
+            'offset' => $newOffset,
+            'totalQueries' => $totalQueries,
+            'queriesExecuted' => $queriesExecuted,
+            'queriesFailed' => $queriesFailed,
+            'progress' => $progress,
+            'fileSize' => formatBytes($fileSize),
+            'processed' => formatBytes($newOffset),
+            'sessionId' => $sessionId
         ]);
+        
     } catch (Exception $e) {
         logMessage($sessionId ?? 'error', "Error: " . $e->getMessage(), 'error');
-        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')]);
+        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage())]);
     }
 }
 
 function getLogs() {
     $sessionId = basename($_GET['session_id'] ?? '');
-
-    if (!preg_match('/^import_[0-9a-f\.]+$/i', $sessionId)) {
+    
+    if (!preg_match('/^import_[0-9a-f]+$/', $sessionId)) {
         jsonResponse(['success' => false, 'message' => 'Invalid session ID']);
     }
-
+    
     $logFile = LOG_DIR . '/' . $sessionId . '.log';
-
+    
     if (!file_exists($logFile)) {
         jsonResponse(['success' => true, 'logs' => []]);
     }
-
-    $logs = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    
+    $logs = file($logFile, FILE_IGNORE_NEW_LINES);
     jsonResponse(['success' => true, 'logs' => $logs]);
 }
 
@@ -901,132 +677,116 @@ function backupDatabase() {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         jsonResponse(['success' => false, 'message' => 'Invalid request']);
     }
-
-    $host = trim((string)($_POST['db_host'] ?? ''));
-    $user = trim((string)($_POST['db_user'] ?? ''));
-    $pass = (string)($_POST['db_pass'] ?? '');
-    $name = trim((string)($_POST['db_name'] ?? ''));
-
+    
+    $host = filter_var($_POST['db_host'] ?? '', FILTER_SANITIZE_STRING);
+    $user = filter_var($_POST['db_user'] ?? '', FILTER_SANITIZE_STRING);
+    $pass = $_POST['db_pass'] ?? '';
+    $name = filter_var($_POST['db_name'] ?? '', FILTER_SANITIZE_STRING);
+    
     try {
-        $mysqli = @new mysqli($host, $user, $pass, $name);
-
+        $mysqli = new mysqli($host, $user, $pass, $name);
+        
         if ($mysqli->connect_error) {
             throw new Exception($mysqli->connect_error);
         }
-
-        if (!is_dir(BACKUP_DIR) && !mkdir(BACKUP_DIR, 0755, true)) {
-            throw new Exception('Unable to create backup directory');
-        }
-
+        
         $backupFile = BACKUP_DIR . '/' . $name . '_' . date('Y-m-d_H-i-s') . '.sql';
-
+        
         $tables = [];
         $result = $mysqli->query("SHOW TABLES");
-        if ($result) {
-            while ($row = $result->fetch_array()) {
-                $tables[] = $row[0];
-            }
-            $result->free();
+        while ($row = $result->fetch_array()) {
+            $tables[] = $row[0];
         }
-
-        $fp = fopen($backupFile, 'w');
-        if (!$fp) {
-            throw new Exception('Unable to create backup file');
-        }
-
-        fwrite($fp, "-- SmartDump Database Backup\n");
-        fwrite($fp, "-- Database: {$name}\n");
-        fwrite($fp, "-- Date: " . date('Y-m-d H:i:s') . "\n\n");
-        fwrite($fp, "SET FOREIGN_KEY_CHECKS = 0;\n\n");
-
+        
+        $output = "-- SmartDump Database Backup\n";
+        $output .= "-- Database: {$name}\n";
+        $output .= "-- Date: " . date('Y-m-d H:i:s') . "\n\n";
+        $output .= "SET FOREIGN_KEY_CHECKS = 0;\n\n";
+        
         foreach ($tables as $table) {
-            fwrite($fp, "DROP TABLE IF EXISTS `{$table}`;\n");
-
+            $output .= "DROP TABLE IF EXISTS `{$table}`;\n";
+            
             $result = $mysqli->query("SHOW CREATE TABLE `{$table}`");
-            if ($result) {
-                $row = $result->fetch_array();
-                fwrite($fp, $row[1] . ";\n\n");
-                $result->free();
-            }
-
+            $row = $result->fetch_array();
+            $output .= $row[1] . ";\n\n";
+            
             $result = $mysqli->query("SELECT * FROM `{$table}`");
-            if ($result && $result->num_rows > 0) {
-                fwrite($fp, "INSERT INTO `{$table}` VALUES\n");
+            
+            if ($result->num_rows > 0) {
+                $output .= "INSERT INTO `{$table}` VALUES\n";
                 $counter = 0;
-
+                
                 while ($row = $result->fetch_array(MYSQLI_NUM)) {
                     $counter++;
-                    fwrite($fp, "(");
-
-                    $colCount = count($row);
+                    $output .= "(";
+                    
                     foreach ($row as $key => $value) {
                         if ($value === null) {
-                            fwrite($fp, "NULL");
+                            $output .= "NULL";
                         } else {
-                            fwrite($fp, "'" . $mysqli->real_escape_string($value) . "'");
+                            $output .= "'" . $mysqli->real_escape_string($value) . "'";
                         }
-
-                        if ($key < $colCount - 1) {
-                            fwrite($fp, ",");
+                        
+                        if ($key < count($row) - 1) {
+                            $output .= ",";
                         }
                     }
-
-                    fwrite($fp, ")");
-                    fwrite($fp, ($counter < $result->num_rows) ? ",\n" : ";\n\n");
+                    
+                    $output .= ")";
+                    $output .= ($counter < $result->num_rows) ? ",\n" : ";\n\n";
                 }
-                $result->free();
             }
         }
-
-        fwrite($fp, "SET FOREIGN_KEY_CHECKS = 1;\n");
-        fclose($fp);
+        
+        $output .= "SET FOREIGN_KEY_CHECKS = 1;\n";
+        
+        file_put_contents($backupFile, $output);
         $mysqli->close();
-
+        
         jsonResponse([
             'success' => true,
             'message' => 'Backup created successfully',
-            'filename'=> basename($backupFile),
-            'size'    => formatBytes(filesize($backupFile))
+            'filename' => basename($backupFile),
+            'size' => formatBytes(filesize($backupFile))
         ]);
+        
     } catch (Exception $e) {
-        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')]);
+        jsonResponse(['success' => false, 'message' => htmlspecialchars($e->getMessage())]);
     }
 }
 
 function downloadBackup() {
     $filename = basename($_GET['filename'] ?? '');
-
+    
     if (!preg_match('/^[a-zA-Z0-9_\-\.]+\.sql$/', $filename)) {
-        exit('Invalid filename');
+        die('Invalid filename');
     }
-
+    
     $filepath = BACKUP_DIR . '/' . $filename;
     $realPath = realpath($filepath);
     $backupDirReal = realpath(BACKUP_DIR);
-
+    
     if (!$realPath || strpos($realPath, $backupDirReal) !== 0 || !file_exists($filepath)) {
-        exit('File not found');
+        die('File not found');
     }
-
+    
     header('Content-Type: application/octet-stream');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Content-Length: ' . filesize($filepath));
     header('X-Content-Type-Options: nosniff');
-
+    
     readfile($filepath);
     exit;
 }
 
 function listBackups() {
     $backups = [];
-
+    
     if (is_dir(BACKUP_DIR)) {
         $items = scandir(BACKUP_DIR);
         foreach ($items as $item) {
-            if ($item === '.' || $item === '..' || $item === '.htaccess') {
-                continue;
-            }
-
+            if ($item === '.' || $item === '..' || $item === '.htaccess') continue;
+            
             $filepath = BACKUP_DIR . '/' . $item;
             if (is_file($filepath)) {
                 $backups[] = [
@@ -1037,49 +797,10 @@ function listBackups() {
             }
         }
     }
-
+    
     jsonResponse(['success' => true, 'backups' => $backups]);
 }
 
-// NOW handle AJAX actions after all helpers are defined
-if (defined('AJAX_REQUEST')) {
-    switch ($_GET['action']) {
-        case 'upload':
-            handleFileUpload();
-            break;
-        case 'list_files':
-            listFiles();
-            break;
-        case 'delete_file':
-            deleteFile();
-            break;
-        case 'test_connection':
-            testConnection();
-            break;
-        case 'detect_charset':
-            detectCharset();
-            break;
-        case 'detect_prefix':
-            detectPrefix();
-            break;
-        case 'import':
-            executeImport();
-            break;
-        case 'get_logs':
-            getLogs();
-            break;
-        case 'backup_database':
-            backupDatabase();
-            break;
-        case 'download_backup':
-            downloadBackup();
-            break;
-        case 'list_backups':
-            listBackups();
-            break;
-    }
-    exit;
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1094,33 +815,39 @@ if (defined('AJAX_REQUEST')) {
             --primary: #667eea;
             --secondary: #764ba2;
         }
+        
         body {
             background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
             min-height: 100vh;
             padding: 20px 0;
         }
+        
         .wizard-container {
             max-width: 900px;
             margin: 0 auto;
         }
+        
         .card {
             border: none;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
         }
+        
         .card-header {
             background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
             color: white;
             padding: 30px;
             text-align: center;
         }
+        
         .step-indicator {
             display: flex;
             justify-content: space-between;
             margin: 30px 0;
             position: relative;
         }
+        
         .step-indicator::before {
             content: '';
             position: absolute;
@@ -1131,12 +858,14 @@ if (defined('AJAX_REQUEST')) {
             background: #dee2e6;
             z-index: 0;
         }
+        
         .step {
             flex: 1;
             text-align: center;
             position: relative;
             z-index: 1;
         }
+        
         .step-circle {
             width: 40px;
             height: 40px;
@@ -1150,34 +879,42 @@ if (defined('AJAX_REQUEST')) {
             margin-bottom: 10px;
             transition: all 0.3s;
         }
+        
         .step.active .step-circle {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
             color: white;
             transform: scale(1.2);
         }
+        
         .step.completed .step-circle {
             background: #28a745;
             color: white;
         }
+        
         .step-label {
             font-size: 14px;
             color: #6c757d;
         }
+        
         .step.active .step-label {
             color: var(--primary);
             font-weight: bold;
         }
+        
         .step-content {
             display: none;
             animation: fadeIn 0.3s;
         }
+        
         .step-content.active {
             display: block;
         }
+        
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        
         .file-item {
             padding: 15px;
             border: 2px solid #dee2e6;
@@ -1187,30 +924,36 @@ if (defined('AJAX_REQUEST')) {
             transition: all 0.3s;
             position: relative;
         }
+        
         .file-item:hover {
             border-color: var(--primary);
             background: #f8f9fa;
             transform: translateX(3px);
         }
+        
         .file-item.selected {
             border-color: var(--primary);
             background: linear-gradient(135deg, rgba(102,126,234,0.15), rgba(118,75,162,0.15));
             box-shadow: 0 2px 8px rgba(102,126,234,0.3);
         }
+        
         .btn-wizard {
             padding: 12px 30px;
             border-radius: 10px;
             font-weight: 600;
         }
+        
         .btn-primary-gradient {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
             border: none;
             color: white;
         }
+        
         .btn-primary-gradient:hover {
             background: linear-gradient(135deg, var(--secondary), var(--primary));
             color: white;
         }
+        
         #logViewer {
             background: #1e1e1e;
             color: #d4d4d4;
@@ -1222,20 +965,25 @@ if (defined('AJAX_REQUEST')) {
             overflow-y: auto;
             display: none;
         }
+        
         #logViewer.active {
             display: block;
         }
+        
         .log-entry {
             padding: 3px 0;
         }
+        
         .log-entry.error { color: #f48771; }
         .log-entry.success { color: #89d185; }
         .log-entry.warning { color: #e5c07b; }
         .log-entry.info { color: #61afef; }
+        
         .progress {
             height: 30px;
             border-radius: 15px;
         }
+        
         .upload-zone {
             border: 3px dashed #dee2e6;
             border-radius: 15px;
@@ -1244,24 +992,29 @@ if (defined('AJAX_REQUEST')) {
             cursor: pointer;
             transition: all 0.3s;
         }
+        
         .upload-zone:hover {
             border-color: var(--primary);
             background: rgba(102,126,234,0.05);
         }
+        
         .upload-zone.dragover {
             border-color: var(--primary);
             background: rgba(102,126,234,0.1);
         }
+        
         #uploadProgress {
             padding: 20px;
             background: #f8f9fa;
             border-radius: 10px;
             border: 2px solid var(--primary);
         }
+        
         #uploadProgress .progress {
             height: 25px;
             border-radius: 10px;
         }
+        
         #uploadProgress .progress-bar {
             background: linear-gradient(135deg, var(--primary), var(--secondary));
         }
@@ -1390,17 +1143,6 @@ if (defined('AJAX_REQUEST')) {
                     
                     <div id="connectionStatus"></div>
                     
-                    <div id="backupSection" style="display: none;">
-                        <div class="alert alert-warning mt-3 mb-3">
-                            <i class="bi bi-exclamation-triangle"></i> 
-                            <strong>Recommended:</strong> Backup your existing database before importing, especially if using "Drop & Recreate" option.
-                        </div>
-                        <button class="btn btn-success w-100 mb-3" onclick="triggerBackupStep2()">
-                            <i class="bi bi-download"></i> Backup Current Database
-                        </button>
-                        <div id="backupStatus"></div>
-                    </div>
-                    
                     <div class="d-flex justify-content-between mt-4">
                         <button class="btn btn-secondary btn-wizard" onclick="goToStep(1)">
                             <i class="bi bi-arrow-left"></i> Back
@@ -1456,7 +1198,6 @@ if (defined('AJAX_REQUEST')) {
                                     <i class="bi bi-magic"></i>
                                 </button>
                             </div>
-                            <small class="text-muted">Only replaces in table names, not in data</small>
                         </div>
                         <div class="col-md-6 mb-3">
                             <label class="form-label">New Prefix (optional)</label>
@@ -1479,7 +1220,7 @@ if (defined('AJAX_REQUEST')) {
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="drop_database">
                                 <label class="form-check-label text-danger">
-                                    <strong>DROP &amp; RECREATE DATABASE</strong> (Deletes all data!)
+                                    <strong>DROP & RECREATE DATABASE</strong> (Deletes all data!)
                                 </label>
                             </div>
                         </div>
@@ -1504,25 +1245,19 @@ if (defined('AJAX_REQUEST')) {
                     </div>
                     
                     <div class="row mb-3">
-                        <div class="col-3">
+                        <div class="col-4">
                             <div class="text-center p-3" style="background: #f8f9fa; border-radius: 10px;">
                                 <small class="text-muted">Queries</small>
                                 <h4 id="totalQueries" class="mb-0">0</h4>
                             </div>
                         </div>
-                        <div class="col-3">
+                        <div class="col-4">
                             <div class="text-center p-3" style="background: #f8f9fa; border-radius: 10px;">
                                 <small class="text-muted">Failed</small>
                                 <h4 id="failedQueries" class="mb-0 text-danger">0</h4>
                             </div>
                         </div>
-                        <div class="col-3">
-                            <div class="text-center p-3" style="background: #f8f9fa; border-radius: 10px;">
-                                <small class="text-muted">Skipped</small>
-                                <h4 id="skippedQueries" class="mb-0 text-warning">0</h4>
-                            </div>
-                        </div>
-                        <div class="col-3">
+                        <div class="col-4">
                             <div class="text-center p-3" style="background: #f8f9fa; border-radius: 10px;">
                                 <small class="text-muted">Processed</small>
                                 <h5 id="dataProcessed" class="mb-0">0</h5>
@@ -1542,7 +1277,7 @@ if (defined('AJAX_REQUEST')) {
                         <div class="alert alert-success">
                             <h5><i class="bi bi-check-circle"></i> Import Complete!</h5>
                         </div>
-                        <button class="btn btn-success btn-wizard me-2" onclick="triggerBackup()">
+                        <button class="btn btn-success btn-wizard me-2" onclick="backupDatabase()">
                             <i class="bi bi-download"></i> Backup DB
                         </button>
                         <button class="btn btn-secondary btn-wizard" onclick="location.reload()">
@@ -1555,14 +1290,13 @@ if (defined('AJAX_REQUEST')) {
 
         <div class="card mt-4">
             <div class="card-body text-center">
-                <p class="mb-2"><i class="bi bi-heart-fill text-danger"></i> Support SmartDump:</p>
-                <form action="https://www.paypal.com/donate" method="post" target="_blank" style="display: inline;">
-                    <input type="hidden" name="business" value="<?php echo htmlspecialchars(PAYPAL_EMAIL, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
-                    <input type="hidden" name="currency_code" value="USD">
-                    <button type="submit" class="btn btn-primary" style="background: #0070ba; border: none;">
-                        <i class="bi bi-paypal"></i> Donate
-                    </button>
-                </form>
+                <p class="mb-2"><i class="bi bi-heart-fill text-danger"></i> Support SmartDump Development:</p>
+                <a href="https://www.paypal.com/paypalme/workflowdone" target="_blank" class="btn btn-primary" style="background: #0070ba; border: none;">
+                    <i class="bi bi-paypal"></i> Donate via PayPal
+                </a>
+                <p class="text-muted mt-3 mb-0 small">
+                    Made with ❤️ by <a href="https://workflowdone.com" target="_blank">WorkflowDone.com</a>
+                </p>
             </div>
         </div>
     </div>
@@ -1581,19 +1315,13 @@ if (defined('AJAX_REQUEST')) {
             document.querySelectorAll('.step-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.step').forEach(el => {
                 el.classList.remove('active');
-                if (parseInt(el.dataset.step, 10) < step) {
+                if (parseInt(el.dataset.step) < step) {
                     el.classList.add('completed');
                 }
             });
             
-            const stepContent = document.getElementById('step' + step);
-            if (stepContent) {
-                stepContent.classList.add('active');
-            }
-            const stepIndicator = document.querySelector('[data-step="' + step + '"]');
-            if (stepIndicator) {
-                stepIndicator.classList.add('active');
-            }
+            document.getElementById('step' + step).classList.add('active');
+            document.querySelector(`[data-step="${step}"]`).classList.add('active');
             currentStep = step;
             
             if (step === 4 && !importRunning) {
@@ -1633,6 +1361,7 @@ if (defined('AJAX_REQUEST')) {
             const formData = new FormData();
             formData.append('sql_file', file);
             
+            // Show upload progress
             const progressHtml = `
                 <div id="uploadProgress" class="mt-3">
                     <div class="d-flex justify-content-between mb-2">
@@ -1648,6 +1377,7 @@ if (defined('AJAX_REQUEST')) {
             `;
             document.getElementById('uploadZone').insertAdjacentHTML('afterend', progressHtml);
             
+            // Create XHR for progress tracking
             const xhr = new XMLHttpRequest();
             
             xhr.upload.addEventListener('progress', (e) => {
@@ -1659,6 +1389,7 @@ if (defined('AJAX_REQUEST')) {
             });
             
             xhr.addEventListener('load', () => {
+                // Remove progress bar
                 const progressEl = document.getElementById('uploadProgress');
                 if (progressEl) {
                     progressEl.remove();
@@ -1675,6 +1406,7 @@ if (defined('AJAX_REQUEST')) {
                         showStatus('Upload complete: ' + data.filename, 'success');
                         selectedFile = data.filename;
                         document.getElementById('step1Next').disabled = false;
+                        // Refresh file list
                         loadFiles();
                     } else {
                         showStatus(data.message, 'danger');
@@ -1742,6 +1474,7 @@ if (defined('AJAX_REQUEST')) {
                     return;
                 }
                 
+                // Auto-select first file if none selected
                 if (!selectedFile && data.files.length > 0) {
                     selectedFile = data.files[0].name;
                     document.getElementById('step1Next').disabled = false;
@@ -1802,8 +1535,6 @@ if (defined('AJAX_REQUEST')) {
                         document.getElementById('step1Next').disabled = true;
                     }
                     loadFiles();
-                } else {
-                    showStatus(data.message || 'Delete failed', 'danger');
                 }
             });
         }
@@ -1837,18 +1568,15 @@ if (defined('AJAX_REQUEST')) {
                 if (data.success) {
                     status.innerHTML = `<div class="alert alert-success"><i class="bi bi-check-circle"></i> ${data.message}</div>`;
                     document.getElementById('step2Next').disabled = false;
-                    document.getElementById('backupSection').style.display = 'block';
                 } else {
                     status.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${data.message}</div>`;
                     document.getElementById('step2Next').disabled = true;
-                    document.getElementById('backupSection').style.display = 'none';
                 }
             })
             .catch(e => {
                 console.error('Test connection error:', e);
                 status.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${e.message}</div>`;
                 document.getElementById('step2Next').disabled = true;
-                document.getElementById('backupSection').style.display = 'none';
             });
         }
 
@@ -1936,22 +1664,17 @@ if (defined('AJAX_REQUEST')) {
 
         function startImport() {
             if (importRunning) return;
-            if (!selectedFile) {
-                showStatus('Please select a file first.', 'warning');
-                goToStep(1);
-                return;
-            }
             
             importRunning = true;
             currentOffset = 0;
             currentTotalQueries = 0;
-            currentSessionId = 'import_' + Date.now().toString(16);
+            currentSessionId = 'import_' + Date.now();
             
-            const logViewer = document.getElementById('logViewer');
-            logViewer.classList.add('active');
-            logViewer.innerHTML = '';
+            document.getElementById('logViewer').classList.add('active');
+            document.getElementById('logViewer').innerHTML = '';
             
             logUpdateInterval = setInterval(updateLogs, 2000);
+            
             executeImportStep();
         }
 
@@ -1970,8 +1693,8 @@ if (defined('AJAX_REQUEST')) {
                 max_time: document.getElementById('max_time').value,
                 old_prefix: document.getElementById('old_prefix').value,
                 new_prefix: document.getElementById('new_prefix').value,
-                drop_database: document.getElementById('drop_database').checked ? '1' : '0',
-                continue_on_error: document.getElementById('continue_on_error').checked ? '1' : '0',
+                drop_database: document.getElementById('drop_database').checked,
+                error_mode: document.getElementById('error_mode').value,
                 notification_email: document.getElementById('notification_email').value,
                 offset: currentOffset,
                 totalQueries: currentTotalQueries,
@@ -1983,18 +1706,10 @@ if (defined('AJAX_REQUEST')) {
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                 body: new URLSearchParams(config)
             })
-            .then(async r => {
-                const text = await r.text();
-                try {
-                    return JSON.parse(text);
-                } catch (e) {
-                    console.error('Server response:', text);
-                    throw new Error('Invalid server response. Check console.');
-                }
-            })
+            .then(r => r.json())
             .then(data => {
                 if (!data.success) {
-                    addLog(data.message || 'Import error', 'error');
+                    addLog(data.message, 'error');
                     stopImport();
                     return;
                 }
@@ -2004,7 +1719,6 @@ if (defined('AJAX_REQUEST')) {
                 
                 document.getElementById('totalQueries').textContent = data.totalQueries;
                 document.getElementById('failedQueries').textContent = data.queriesFailed || 0;
-                document.getElementById('skippedQueries').textContent = data.queriesSkipped || 0;
                 document.getElementById('dataProcessed').textContent = data.processed;
                 
                 const progressBar = document.getElementById('progressBar');
@@ -2015,7 +1729,7 @@ if (defined('AJAX_REQUEST')) {
                     addLog('Import complete!', 'success');
                     completeImport();
                 } else {
-                    const delay = parseInt(document.getElementById('delay').value, 10) || 500;
+                    const delay = parseInt(document.getElementById('delay').value) || 500;
                     setTimeout(executeImportStep, delay);
                 }
             })
@@ -2029,7 +1743,6 @@ if (defined('AJAX_REQUEST')) {
             importRunning = false;
             if (logUpdateInterval) {
                 clearInterval(logUpdateInterval);
-                logUpdateInterval = null;
             }
             addLog('Stopped', 'warning');
         }
@@ -2038,7 +1751,6 @@ if (defined('AJAX_REQUEST')) {
             importRunning = false;
             if (logUpdateInterval) {
                 clearInterval(logUpdateInterval);
-                logUpdateInterval = null;
             }
             document.getElementById('importControls').style.display = 'none';
             document.getElementById('importComplete').style.display = 'block';
@@ -2047,7 +1759,7 @@ if (defined('AJAX_REQUEST')) {
         function updateLogs() {
             if (!currentSessionId) return;
             
-            fetch(`?action=get_logs&session_id=${encodeURIComponent(currentSessionId)}`)
+            fetch(`?action=get_logs&session_id=${currentSessionId}`)
             .then(r => r.json())
             .then(data => {
                 if (data.success && data.logs) {
@@ -2068,8 +1780,7 @@ if (defined('AJAX_REQUEST')) {
                         logViewer.scrollTop = logViewer.scrollHeight;
                     }
                 }
-            })
-            .catch(() => {});
+            });
         }
 
         function addLog(message, type = 'info') {
@@ -2082,44 +1793,7 @@ if (defined('AJAX_REQUEST')) {
             logViewer.scrollTop = logViewer.scrollHeight;
         }
 
-        function triggerBackupStep2() {
-            const config = {
-                db_host: document.getElementById('db_host').value,
-                db_name: document.getElementById('db_name').value,
-                db_user: document.getElementById('db_user').value,
-                db_pass: document.getElementById('db_pass').value
-            };
-            
-            const status = document.getElementById('backupStatus');
-            status.innerHTML = '<div class="alert alert-info"><i class="bi bi-hourglass-split"></i> Creating backup... Please wait.</div>';
-            
-            fetch('?action=backup_database', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: new URLSearchParams(config)
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    status.innerHTML = `
-                        <div class="alert alert-success">
-                            <i class="bi bi-check-circle"></i> Backup created: <strong>${data.filename}</strong> (${data.size})
-                            <br><br>
-                            <a href="?action=download_backup&filename=${encodeURIComponent(data.filename)}" class="btn btn-sm btn-primary">
-                                <i class="bi bi-download"></i> Download Backup
-                            </a>
-                        </div>`;
-                } else {
-                    status.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${data.message || 'Backup failed'}</div>`;
-                }
-            })
-            .catch(e => {
-                console.error('Backup error', e);
-                status.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${e.message}</div>`;
-            });
-        }
-
-        function triggerBackup() {
+        function backupDatabase() {
             const config = {
                 db_host: document.getElementById('db_host').value,
                 db_name: document.getElementById('db_name').value,
@@ -2138,16 +1812,12 @@ if (defined('AJAX_REQUEST')) {
             .then(data => {
                 if (data.success) {
                     showStatus('Backup created!', 'success');
-                    if (confirm('Download backup now?')) {
-                        window.location.href = `?action=download_backup&filename=${encodeURIComponent(data.filename)}`;
+                    if (confirm('Download?')) {
+                        window.location.href = `?action=download_backup&filename=${data.filename}`;
                     }
                 } else {
-                    showStatus(data.message || 'Backup failed', 'danger');
+                    showStatus(data.message, 'danger');
                 }
-            })
-            .catch(e => {
-                console.error('Backup error', e);
-                showStatus(e.message, 'danger');
             });
         }
 
@@ -2155,7 +1825,7 @@ if (defined('AJAX_REQUEST')) {
             const alertDiv = document.createElement('div');
             alertDiv.className = `alert alert-${type}`;
             alertDiv.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; border-radius: 10px;';
-            alertDiv.textContent = message;
+            alertDiv.innerHTML = message;
             document.body.appendChild(alertDiv);
             setTimeout(() => alertDiv.remove(), 3000);
         }

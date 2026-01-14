@@ -8,7 +8,7 @@
 
 • [**Report Bug**](https://github.com/workflowdone/smartdump/issues) • [**Request Feature**](https://github.com/workflowdone/smartdump/issues)
 
-![SmartDump Interface](https://workflowdone.com/smartdump-interface)
+![SmartDump Interface](https://workflowdone.com/smartdump-interface.jpg)
 
 ## ✨ Features
 

@@ -62,7 +62,6 @@ define('MAX_UPLOAD_SIZE', 500 * 1024 * 1024);
 define('VERSION', '1.0.0');
 define('ENABLE_IP_WHITELIST', false);
 define('ALLOWED_IPS', ['127.0.0.1', '::1']);
-define('PAYPAL_EMAIL', 'your@paypal.com'); // CHANGE THIS!
 
 // Security: IP Whitelist
 if (!defined('AJAX_REQUEST') && ENABLE_IP_WHITELIST) {
